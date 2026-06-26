@@ -1,4 +1,9 @@
+# =========================
+# Install (Colab)
+# =========================
 !pip -q install -U sentence-transformers openpyxl tensorflow tf-keras
+from google.colab import files
+
 import os, random
 import numpy as np
 import pandas as pd
@@ -43,6 +48,9 @@ REG_BATCH_SIZE = 32
 REG_EPOCHS = 30
 REG_LR = 1e-4
 REG_OUT_DIR = "/content/regressor_folds"
+
+HISTORY_OUT_DIR = "/content/learning_curves"
+os.makedirs(HISTORY_OUT_DIR, exist_ok=True)
 # =========================
 # Reproducibility
 # =========================
@@ -226,6 +234,83 @@ def encode_students(sbert_model, df_sub):
 
     return np.stack(emb_list, axis=1).astype(np.float32)
 
+def history_to_df(history, fold):
+    """
+    Convert Keras History object to a DataFrame.
+    Loss is MSE on normalized PHQ-9 score.
+    MAE is normalized MAE; mae_phq9 and val_mae_phq9 convert it back to PHQ-9 points.
+    """
+    hist = pd.DataFrame(history.history)
+    hist.insert(0, "epoch", np.arange(1, len(hist) + 1))
+    hist.insert(0, "fold", fold)
+
+    if "mae" in hist.columns:
+        hist["mae_phq9"] = hist["mae"] * 27.0
+    if "val_mae" in hist.columns:
+        hist["val_mae_phq9"] = hist["val_mae"] * 27.0
+
+    return hist
+
+
+def plot_fold_learning_curve(hist_df, fold, out_dir):
+    """
+    Plot training vs validation MAE for one fold.
+    Uses PHQ-9 points instead of normalized MAE because it is easier to explain in the paper.
+    """
+    plt.figure(figsize=(7, 5))
+    plt.plot(hist_df["epoch"], hist_df["mae_phq9"], marker="o", label="Training MAE")
+    plt.plot(hist_df["epoch"], hist_df["val_mae_phq9"], marker="o", label="Validation MAE")
+    plt.xlabel("Epoch")
+    plt.ylabel("MAE in PHQ-9 points")
+    plt.title(f"Learning Curve of Bi-LSTM Regressor (Fold {fold})")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    out_path = os.path.join(out_dir, f"learning_curve_fold_{fold}.png")
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"Saved learning curve -> {out_path}")
+
+
+def plot_average_learning_curve(all_histories_df, out_dir):
+    """
+    Plot average training/validation MAE across folds.
+    Handles early stopping by averaging only available folds at each epoch.
+    """
+    avg = (
+        all_histories_df
+        .groupby("epoch")[["mae_phq9", "val_mae_phq9"]]
+        .agg(["mean", "std", "count"])
+    )
+
+    epochs = avg.index.values
+
+    train_mean = avg[("mae_phq9", "mean")].values
+    train_std = avg[("mae_phq9", "std")].fillna(0).values
+
+    val_mean = avg[("val_mae_phq9", "mean")].values
+    val_std = avg[("val_mae_phq9", "std")].fillna(0).values
+
+    plt.figure(figsize=(7, 5))
+
+    plt.plot(epochs, train_mean, marker="o", label="Training MAE")
+    plt.fill_between(epochs, train_mean - train_std, train_mean + train_std, alpha=0.15)
+
+    plt.plot(epochs, val_mean, marker="o", label="Validation MAE")
+    plt.fill_between(epochs, val_mean - val_std, val_mean + val_std, alpha=0.15)
+
+    plt.xlabel("Epoch")
+    plt.ylabel("MAE in PHQ-9 points")
+    plt.title("Average Learning Curve Across 5 Folds")
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    out_path = os.path.join(out_dir, "learning_curve_average_5fold.png")
+    plt.savefig(out_path, dpi=300, bbox_inches="tight")
+    plt.close()
+    print(f"Saved average learning curve -> {out_path}")
 
 # =========================
 # K-Fold CV: SBERT fine-tune -> embed -> regressor train/eval
@@ -240,6 +325,8 @@ fold_acc, fold_macro_f1, fold_weighted_f1, fold_macro_recall, fold_macro_precisi
 os.makedirs(SBERT_OUT_BASE, exist_ok=True)
 CM_OUT_DIR = "/content/confusion_matrices"
 os.makedirs(CM_OUT_DIR, exist_ok=True)
+
+all_history_dfs = []
 
 for fold, (train_idx, test_idx) in enumerate(skf.split(np.zeros(len(sev)), sev), start=1):
     print(f"\n================ Fold {fold}/{K} ================ রাহুল")
@@ -356,6 +443,15 @@ for fold, (train_idx, test_idx) in enumerate(skf.split(np.zeros(len(sev)), sev),
         verbose=0
     )
 
+    hist_df = history_to_df(history, fold)
+    all_history_dfs.append(hist_df)
+
+    hist_csv_path = os.path.join(HISTORY_OUT_DIR, f"history_fold_{fold}.csv")
+    hist_df.to_csv(hist_csv_path, index=False)
+    print(f"Saved training history -> {hist_csv_path}")
+
+    plot_fold_learning_curve(hist_df, fold, HISTORY_OUT_DIR)
+
     os.makedirs(REG_OUT_DIR, exist_ok=True)
 
     reg_path = os.path.join(REG_OUT_DIR, f"regressor_fold_{fold}.h5")
@@ -457,6 +553,14 @@ print(f"Weighted Precision: {np.mean(fold_weighted_precision):.4f} \u00b1 {np.st
 print(f"Weighted Recall   : {np.mean(fold_weighted_recall):.4f} \u00b1 {np.std(fold_weighted_recall, ddof=1):.4f}")
 print(f"Macro F1     : {np.mean(fold_macro_f1):.4f} \u00b1 {np.std(fold_macro_f1, ddof=1):.4f}")
 print(f"Weighted F1  : {np.mean(fold_weighted_f1):.4f} \u00b1 {np.std(fold_weighted_f1, ddof=1):.4f}")
+
+all_histories_df = pd.concat(all_history_dfs, ignore_index=True)
+
+all_histories_csv = os.path.join(HISTORY_OUT_DIR, "history_all_folds.csv")
+all_histories_df.to_csv(all_histories_csv, index=False)
+print(f"Saved all fold histories -> {all_histories_csv}")
+
+plot_average_learning_curve(all_histories_df, HISTORY_OUT_DIR)
 
 # =========================
 # Final training on ALL data (after K-fold)
@@ -561,5 +665,6 @@ history_final = reg_final.fit(
 # ---------
 FINAL_REG_OUT = "/content/regressor_final.h5"
 reg_final.save(FINAL_REG_OUT)
+files.download(FINAL_REG_OUT)
 print(f"Saved final SBERT to: {FINAL_SBERT_OUT}")
 print(f"Saved final regressor to: {FINAL_REG_OUT}")
