@@ -36,7 +36,7 @@ K = 5
 
 STUDENTS_XLSX = "/content/PHQ9_Student_Depression_Dataset_Aligned.xlsx"
 
-MENTAL_MODEL_ID = "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext"
+MENTAL_MODEL_ID = "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract-fulltext" #replace with dmis-lab/biobert-v1.1 for BioBERT
 
 MAX_SEQ_LEN = 128
 SBERT_BATCH_SIZE = 32
