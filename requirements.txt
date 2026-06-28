@@ -1,0 +1,14 @@
+numpy
+pandas
+openpyxl
+scipy
+scikit-learn
+tensorflow
+tf-keras
+torch
+transformers
+sentence-transformers
+flax
+matplotlib
+seaborn
+h5py
